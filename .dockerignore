@@ -1,0 +1,7 @@
+.git/
+.venv/
+data/
+frontend/node_modules/
+frontend/.next/
+deploy/secret.yaml
+**/__pycache__/

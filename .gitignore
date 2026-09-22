@@ -1,0 +1,11 @@
+node_modules/
+.next/
+data/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+deploy/secret.yaml
+frontend/tsconfig.tsbuildinfo
+deploy/local.env
+deploy/k8s.rendered.yaml

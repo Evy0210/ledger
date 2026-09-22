@@ -1,0 +1,250 @@
+# ledger on a single-node K3s cluster. The dollar-brace placeholders are filled from
+# deploy/local.env by sync-and-deploy.sh (see deploy/local.env.example).
+# Conventions: single-origin ingress (frontend only), Next reverse-proxies
+# /api to the backend Service; data on a local-path PVC; ONE backend replica
+# because the Telegram long-poll loop and the reminder scheduler are in-process.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ledger
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ledger-data
+  namespace: ledger
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-backend
+  namespace: ledger
+spec:
+  replicas: 1                     # Telegram getUpdates 只能有一个消费者 → 永远别扩
+  strategy:
+    type: Recreate                # RWO volume + 单 poller
+  selector:
+    matchLabels: { app: ledger-backend }
+  template:
+    metadata:
+      labels: { app: ledger-backend }
+    spec:
+      containers:
+        - name: backend
+          image: ledger-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8070
+          env:
+            - name: DATA_ROOT
+              value: "/data"
+            - name: SITE_URL
+              value: "https://${LEDGER_HOST}"
+            - name: TIMEZONE
+              value: "Europe/London"
+            - name: MAIL_INBOUND_ADDRESS   # 设置页上显示「转发到这个地址」
+              value: "${MAIL_INBOUND_ADDRESS}"
+            - name: RECIPES_URL            # 可选：菜谱站，食材页给「找菜谱」链接
+              value: "${RECIPES_URL}"
+            - name: MAIL_ALLOWED_SENDERS   # 只收这些邮箱转发来的账单
+              value: "${MAIL_ALLOWED_SENDERS}"
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: ADMIN_TOKEN }
+            - name: VISION_API_KEY
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: VISION_API_KEY, optional: true }
+            - name: VISION_MODEL
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: VISION_MODEL, optional: true }
+            - name: TEXT_MODEL
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: TEXT_MODEL, optional: true }
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: TELEGRAM_BOT_TOKEN, optional: true }
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: TELEGRAM_CHAT_ID, optional: true }
+            - name: MAIL_IMAP_HOST
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: MAIL_IMAP_HOST, optional: true }
+            - name: MAIL_USER
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: MAIL_USER, optional: true }
+            - name: MAIL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: MAIL_PASSWORD, optional: true }
+            - name: MAIL_FOLDER
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: MAIL_FOLDER, optional: true }
+            - name: MAIL_INBOUND_SECRET
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: MAIL_INBOUND_SECRET, optional: true }
+            # 合租分账表双向同步。SHEETS_ID / SHEETS_SA_JSON 缺了就整个关掉，不影响其余功能。
+            - name: SHEETS_ID
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: SHEETS_ID, optional: true }
+            - name: SHEETS_SA_JSON
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: SHEETS_SA_JSON, optional: true }
+            - name: SHEETS_ME
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: SHEETS_ME, optional: true }
+            - name: SHEETS_PEOPLE
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: SHEETS_PEOPLE, optional: true }
+            - name: SHEETS_SYNC_MINUTES
+              valueFrom:
+                secretKeyRef: { name: ledger-secrets, key: SHEETS_SYNC_MINUTES, optional: true }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet: { path: /api/health, port: 8070 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: 8070 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: { cpu: "50m", memory: "96Mi" }
+            limits: { cpu: "500m", memory: "384Mi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ledger-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-backend
+  namespace: ledger
+spec:
+  selector: { app: ledger-backend }
+  ports:
+    - port: 8070
+      targetPort: 8070
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-frontend
+  namespace: ledger
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ledger-frontend }
+  template:
+    metadata:
+      labels: { app: ledger-frontend }
+    spec:
+      containers:
+        - name: frontend
+          image: ledger-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3070
+          readinessProbe:
+            tcpSocket: { port: 3070 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "384Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-frontend
+  namespace: ledger
+spec:
+  selector: { app: ledger-frontend }
+  ports:
+    - port: 3070
+      targetPort: 3070
+---
+# 演示后端：主页访客看的假账本。同一个镜像，DEMO_MODE=1，不挂任何 secret、不碰真实数据卷，
+# 数据在 emptyDir 里、每天自动重建；只读。前端把 Authorization: Bearer guest 的请求转到这里。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-demo-backend
+  namespace: ledger
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ledger-demo-backend }
+  template:
+    metadata:
+      labels: { app: ledger-demo-backend }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: backend
+          image: ledger-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8070
+          env:
+            - { name: DEMO_MODE, value: "1" }
+            - { name: ADMIN_TOKEN, value: "guest" }
+            - { name: DATA_ROOT, value: "/data" }
+            - { name: TIMEZONE, value: "Europe/London" }
+            - { name: SITE_URL, value: "https://${LEDGER_HOST}" }
+            - { name: SHEETS_PEOPLE, value: "Mia,Me,Leo" }
+            - { name: SHEETS_ME, value: "Me" }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet: { path: /api/health, port: 8070 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: 8070 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: { cpu: "20m", memory: "64Mi" }
+            limits: { cpu: "300m", memory: "256Mi" }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-demo-backend
+  namespace: ledger
+spec:
+  selector: { app: ledger-demo-backend }
+  ports:
+    - port: 8070
+      targetPort: 8070
+---
+# Zeabur's ingress-controller routes by host; expose only the frontend.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ledger
+  namespace: ledger
+spec:
+  rules:
+    - host: ${LEDGER_HOST}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ledger-frontend
+                port: { number: 3070 }
