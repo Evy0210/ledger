@@ -9,3 +9,4 @@ deploy/secret.yaml
 frontend/tsconfig.tsbuildinfo
 deploy/local.env
 deploy/k8s.rendered.yaml
+INTERNAL.md

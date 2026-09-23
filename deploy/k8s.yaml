@@ -231,6 +231,104 @@ spec:
     - port: 8070
       targetPort: 8070
 ---
+# 运行监控：每 10 分钟检查一次后端 / 演示后端 / 前端 / 公网 HTTPS / 证书 / 磁盘，
+# 状态变化时发 Telegram（backend/monitor.py）。复用后端镜像；聊天 ID 放在 ledger-monitor secret
+# 里（MONITOR_CHAT_ID），没有就退回 ledger-secrets 的 TELEGRAM_CHAT_ID。状态文件在节点的 hostPath。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ledger-monitor
+  namespace: ledger
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          containers:
+            - name: monitor
+              image: ledger-backend:latest
+              imagePullPolicy: IfNotPresent
+              command: ["python", "/app/backend/monitor.py"]
+              env:
+                - name: MONITOR_TARGETS
+                  value: "后端=http://ledger-backend:8070/api/health,演示后端=http://ledger-demo-backend:8070/api/health,前端=http://ledger-frontend:3070/login"
+                - name: MONITOR_PUBLIC_URL
+                  value: "https://${LEDGER_HOST}"
+                - name: MONITOR_STATE
+                  value: "/state/ledger-monitor.json"
+                - name: MONITOR_BACKUP_MARK
+                  value: "/backup/last_ok"
+                - name: TELEGRAM_BOT_TOKEN
+                  valueFrom:
+                    secretKeyRef: { name: ledger-secrets, key: TELEGRAM_BOT_TOKEN, optional: true }
+                - name: TELEGRAM_CHAT_ID
+                  valueFrom:
+                    secretKeyRef: { name: ledger-secrets, key: TELEGRAM_CHAT_ID, optional: true }
+                - name: MONITOR_CHAT_ID
+                  valueFrom:
+                    secretKeyRef: { name: ledger-monitor, key: MONITOR_CHAT_ID, optional: true }
+              volumeMounts:
+                - { name: state, mountPath: /state }
+                - { name: backup, mountPath: /backup, readOnly: true }
+              resources:
+                requests: { cpu: "10m", memory: "48Mi" }
+                limits: { cpu: "200m", memory: "128Mi" }
+          volumes:
+            - name: state
+              hostPath: { path: /var/lib/ledger-monitor, type: DirectoryOrCreate }
+            - name: backup
+              hostPath: { path: /var/backups/ledger, type: DirectoryOrCreate }
+---
+# 每日备份（伦敦时间 04:30）：ledger.db 在线备份 + 小票图打包，存到节点 /var/backups/ledger/日期/，
+# 保留 30 天（backend/backup.py）。和后端挂同一个 PVC（同节点 RWO 可以共享）。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ledger-backup
+  namespace: ledger
+spec:
+  schedule: "30 4 * * *"
+  timeZone: "Europe/London"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          containers:
+            - name: backup
+              image: ledger-backend:latest
+              imagePullPolicy: IfNotPresent
+              command: ["python", "/app/backend/backup.py"]
+              env:
+                - { name: DATA_ROOT, value: "/data" }
+                - { name: BACKUP_DIR, value: "/backup" }
+                - { name: BACKUP_KEEP_DAYS, value: "30" }
+              volumeMounts:
+                - { name: data, mountPath: /data, readOnly: true }
+                - { name: backup, mountPath: /backup }
+              resources:
+                requests: { cpu: "10m", memory: "32Mi" }
+                limits: { cpu: "300m", memory: "128Mi" }
+          volumes:
+            - name: data
+              persistentVolumeClaim: { claimName: ledger-data }
+            - name: backup
+              hostPath: { path: /var/backups/ledger, type: DirectoryOrCreate }
+---
 # Zeabur's ingress-controller routes by host; expose only the frontend.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
