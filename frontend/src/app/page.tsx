@@ -8,6 +8,9 @@ import { SwipeRow } from "@/components/swipe-row";
 import { SplitSheet, SplitTags, type SheetMode } from "@/components/split-sheet";
 import { catInfo, itemLabel, type CategoryTotal, type Expense, type MonthSummary, type Status } from "@/lib/types";
 
+type View = "list" | "calendar";
+const VIEW_KEY = "ledger.view";
+
 export default function HomePage() {
   return <RequireAuth><Dashboard /></RequireAuth>;
 }
@@ -18,6 +21,16 @@ function Dashboard() {
   const [expenses, setExpenses] = useState<Expense[] | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
+  const [view, setView] = useState<View>("list");
+
+  // 列表 / 日历 记在本机，下次打开保持
+  useEffect(() => {
+    try { if (localStorage.getItem(VIEW_KEY) === "calendar") setView("calendar"); } catch {}
+  }, []);
+  function switchView(v: View) {
+    setView(v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch {}
+  }
 
   // ?m=2026-08 优先（Telegram 月报里的链接 / 浏览器后退），否则本月
   useEffect(() => {
@@ -82,7 +95,16 @@ function Dashboard() {
 
       {summary && summary.count > 0 && <DaySpark s={summary} today={today} />}
 
-      <ExpenseList expenses={expenses} today={today} onChanged={() => void load(month)} />
+      {expenses && expenses.length > 0 && (
+        <div className="mode-tabs view-tabs">
+          <button className={`mode-tab ${view === "list" ? "active" : ""}`} onClick={() => switchView("list")}>列表</button>
+          <button className={`mode-tab ${view === "calendar" ? "active" : ""}`} onClick={() => switchView("calendar")}>日历</button>
+        </div>
+      )}
+
+      {view === "calendar" && expenses && expenses.length > 0
+        ? <CalendarView key={month} month={month} expenses={expenses} today={today} onChanged={() => void load(month)} />
+        : <ExpenseList expenses={expenses} today={today} onChanged={() => void load(month)} />}
 
       <Link href="/add" className="fab" aria-label="记一笔">＋</Link>
     </main>
@@ -182,10 +204,59 @@ function DaySpark({ s, today }: { s: MonthSummary; today: string }) {
   );
 }
 
-function ExpenseList({ expenses, today, onChanged }: { expenses: Expense[] | null; today: string; onChanged: () => void }) {
+// 周一开头（英国习惯），格子颜色深浅按当天花费；点某天在下面列出那天的明细
+function CalendarView({ month, expenses, today, onChanged }: { month: string; expenses: Expense[]; today: string; onChanged: () => void }) {
+  const [picked, setPicked] = useState<string | null>(today.startsWith(month) ? today : null);
+  const totals: Record<string, number> = {};
+  const counts: Record<string, number> = {};
+  for (const e of expenses) {
+    totals[e.date] = (totals[e.date] || 0) + e.share_gbp;
+    counts[e.date] = (counts[e.date] || 0) + 1;
+  }
+  // 房租这种大额会把别的天都压成一个色 —— 用 85 分位当满格，超过的封顶
+  const sorted = Object.values(totals).sort((a, b) => a - b);
+  const scale = Math.max(1, sorted[Math.floor((sorted.length - 1) * 0.85)] || 0);
+  const [y, m] = month.split("-").map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7;
+  const cells: (string | null)[] = [
+    ...Array<null>(lead).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`),
+  ];
+  const dayRows = picked ? expenses.filter((e) => e.date === picked) : [];
+  return (
+    <>
+      <section className="panel cal">
+        <div className="cal-grid">
+          {["一", "二", "三", "四", "五", "六", "日"].map((w) => <div key={w} className="cal-wd">{w}</div>)}
+          {cells.map((d, i) => {
+            if (!d) return <div key={`_${i}`} />;
+            const v = totals[d] || 0;
+            const heat = v ? Math.round(6 + Math.min(1, v / scale) * 54) : 0;
+            return (
+              <button key={d} disabled={d > today}
+                className={`cal-day ${d === today ? "today" : ""} ${d === picked ? "picked" : ""}`}
+                style={heat ? { background: `color-mix(in srgb, var(--brick) ${heat}%, var(--card))` } : undefined}
+                onClick={() => setPicked(d === picked ? null : d)}>
+                <span className="cal-num">{Number(d.slice(8))}</span>
+                {v > 0 && <span className="cal-amt">£{v < 10 ? v.toFixed(1).replace(/\.0$/, "") : Math.round(v)}</span>}
+                {counts[d] > 1 && <span className="cal-count">{counts[d]}笔</span>}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+      {picked
+        ? <ExpenseList expenses={dayRows} today={today} onChanged={onChanged} emptyText="这天没有记录" />
+        : <div className="empty">点一天看当天明细</div>}
+    </>
+  );
+}
+
+function ExpenseList({ expenses, today, onChanged, emptyText = "这个月还没有记录" }: { expenses: Expense[] | null; today: string; onChanged: () => void; emptyText?: string }) {
   const [sheet, setSheet] = useState<{ e: Expense; mode: SheetMode } | null>(null);
   if (!expenses) return null;
-  if (!expenses.length) return <div className="empty">这个月还没有记录</div>;
+  if (!expenses.length) return <div className="empty">{emptyText}</div>;
   const groups: { date: string; rows: Expense[]; total: number }[] = [];
   for (const e of expenses) {
     const g = groups[groups.length - 1];
