@@ -330,6 +330,7 @@ def overview() -> dict:
     people = [{"name": p, "paid_gbp": round(paid[p], 2), "owes_gbp": round(owes[p], 2),
                "net_gbp": round(paid[p] - owes[p], 2)} for p in SHEETS_PEOPLE]
     return {"enabled": True, "me": SHEETS_ME, "people": people,
+            "url": f"https://docs.google.com/spreadsheets/d/{SHEETS_ID}/edit",
             "transfers": _settle(people), "rows": out,
             "open_count": sum(1 for r in out if not r["settled"]),
             "open_gbp": round(sum(r["amount_gbp"] for r in out if not r["settled"]), 2)}

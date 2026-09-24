@@ -190,7 +190,7 @@ export type SheetRow = {
   ref: string; from_web: boolean;          // from_web=false 就是室友自己在表上记的
 };
 export type SheetOverview = {
-  enabled: boolean; me?: string; people: SheetPerson[]; transfers?: SheetTransfer[];
+  enabled: boolean; me?: string; url?: string; people: SheetPerson[]; transfers?: SheetTransfer[];
   rows: SheetRow[]; open_count?: number; open_gbp?: number;
 };
 export type SheetSyncResult = SheetOverview & {

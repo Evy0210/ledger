@@ -140,9 +140,12 @@ function SplitInner() {
         <section className="panel">
           <div className="panel-title">
             <span>🏠 合租账本</span>
-            <button className="btn ghost small" onClick={syncSheet} disabled={syncing}>
-              {syncing ? "同步中…" : "🔄 同步"}
-            </button>
+            <span style={{ display: "flex", gap: 6 }}>
+              {sheet.url && <a className="btn ghost small" href={sheet.url} target="_blank" rel="noopener noreferrer">打开表格 ↗</a>}
+              <button className="btn ghost small" onClick={syncSheet} disabled={syncing}>
+                {syncing ? "同步中…" : "🔄 同步"}
+              </button>
+            </span>
           </div>
           <div className="hero-chips">
             {sheet.people.map((p) => (
