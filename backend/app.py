@@ -132,10 +132,20 @@ class ExpenseIn(BaseModel):
 
 
 @app.get("/api/expenses", dependencies=[Depends(require_auth)])
-def list_expenses(month: str = "", day: str = "", limit: int = 0):
+def list_expenses(month: str = "", day: str = "", limit: int = 0, start: str = "", end: str = ""):
     if month and not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(400, "month 格式 YYYY-MM")
-    return {"expenses": database.list_expenses(month=month or None, day=day or None, limit=limit)}
+    _check_range(start, end)
+    return {"expenses": database.list_expenses(month=month or None, day=day or None, limit=limit,
+                                               start=start or None, end=end or None)}
+
+
+def _check_range(start: str, end: str):
+    for v in (start, end):
+        if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+            raise HTTPException(400, "日期格式 YYYY-MM-DD")
+    if bool(start) != bool(end):
+        raise HTTPException(400, "start 和 end 要一起给")
 
 
 @app.post("/api/expenses", dependencies=[Depends(require_auth)])
@@ -311,6 +321,12 @@ def summary(month: str = ""):
     budget = database.get_setting("budget_gbp")
     s["budget_gbp"] = float(budget) if budget else None
     return s
+
+
+@app.get("/api/days", dependencies=[Depends(require_auth)])
+def days(start: str, end: str):
+    _check_range(start, end)
+    return {"days": database.daily_totals(start, end)}
 
 
 @app.get("/api/months", dependencies=[Depends(require_auth)])

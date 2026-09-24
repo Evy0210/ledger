@@ -1,6 +1,6 @@
 "use client";
 
-import type { Expense, ExpenseInput, InboundEmail, MonthRow, MonthSummary, PantryOverview, ParsedReceipt, ReconcileResult, Settings, SheetOverview, SheetRoster, SheetSyncResult, SmsTx, SplitInput, Status } from "./types";
+import type { DayTotal, Expense, ExpenseInput, InboundEmail, MonthRow, MonthSummary, PantryOverview, ParsedReceipt, ReconcileResult, Settings, SheetOverview, SheetRoster, SheetSyncResult, SmsTx, SplitInput, Status } from "./types";
 
 // Same-origin: Next rewrites /api/* to the backend both in dev and in prod.
 const TOKEN_KEY = "ledger_token";
@@ -78,6 +78,8 @@ export const api = {
   },
   status: () => request<Status>("/api/status"),
   listExpenses: (month: string) => request<{ expenses: Expense[] }>(`/api/expenses?month=${month}`),
+  rangeExpenses: (start: string, end: string) => request<{ expenses: Expense[] }>(`/api/expenses?start=${start}&end=${end}`),
+  days: (start: string, end: string) => request<{ days: DayTotal[] }>(`/api/days?start=${start}&end=${end}`),
   getExpense: (id: number | string) => request<Expense>(`/api/expenses/${id}`),
   createExpense: (input: ExpenseInput) =>
     request<Expense>("/api/expenses", { method: "POST", body: JSON.stringify(input) }),
@@ -173,4 +175,20 @@ export function shiftMonth(month: string, delta: number): string {
 export function monthLabel(month: string): string {
   const [y, m] = month.split("-");
   return `${y} 年 ${Number(m)} 月`;
+}
+
+/** "YYYY-MM-DD" 加减天数（按本地日历算，不经过 UTC，免得跨夏令时差一天）。 */
+export function addDays(day: string, delta: number): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return dateStr(new Date(y, m - 1, d + delta));
+}
+
+export function dateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** 那一周的周一（英国习惯周一开头）。 */
+export function weekStart(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return addDays(day, -((new Date(y, m - 1, d).getDay() + 6) % 7));
 }

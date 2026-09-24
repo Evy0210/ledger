@@ -180,8 +180,41 @@ input[type="date"].input { display: block; min-height: 44px; }
 .expense-row .e-amt .money { font-size: 16px; font-weight: 600; }
 .expense-row .e-amt small { display: block; color: var(--ink-faint); font-size: 11px; font-family: var(--mono); }
 /* ---- calendar view ---- */
-.view-tabs { margin: 16px 0 0; }
-.cal { margin-top: 12px; padding: 12px 10px; }
+.cal-panel { margin-top: 14px; padding: 12px 10px 14px; }
+.cal-tabs { margin-bottom: 10px; }
+.cal-nav { margin: 0 0 8px; }
+.cal-title { display: flex; flex-direction: column; align-items: center; }
+.cal-title h2 { margin: 0; font-size: 17px; font-weight: 700; }
+.cal-today { border: none; background: none; color: var(--brick); font-size: 12px; padding: 0; }
+.cal-sum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 0 4px 10px; font-size: 13px; }
+.cal-sum b { color: var(--ink); font-family: var(--mono); font-weight: 600; }
+.cal-total { font-size: 22px; font-weight: 600; }
+.cal-picked { display: flex; justify-content: center; margin-top: 10px; font-size: 12px; min-height: 30px; align-items: center; }
+.months-panel { margin-top: 14px; }
+
+.week-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.week-day { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; border-radius: 9px; border: 1px solid transparent; background: transparent; }
+.week-day:disabled { opacity: .35; cursor: default; }
+.week-day.today .week-num { color: var(--brick); }
+.week-day.picked { border-color: var(--ink); background: var(--paper); }
+.week-amt { font-family: var(--mono); font-size: 11px; height: 16px; white-space: nowrap; }
+.week-bar { display: flex; align-items: flex-end; width: 60%; height: 90px; background: var(--paper); border-radius: 5px; overflow: hidden; }
+.week-bar > i { display: block; width: 100%; background: var(--brick); opacity: .75; border-radius: 5px 5px 0 0; }
+.week-bar > i.over { opacity: 1; }
+.week-wd { font-size: 11px; color: var(--ink-faint); }
+.week-num { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.year-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 10px; }
+@media (min-width: 600px) { .year-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.year-month { align-self: start; border: none; background: none; padding: 4px; border-radius: 8px; text-align: left; }
+.year-month:disabled { opacity: .35; cursor: default; }
+.year-head { display: flex; justify-content: space-between; align-items: baseline; height: 18px; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+.year-head .money { font-weight: 400; color: var(--ink-soft); font-size: 11px; }
+.year-cells { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+.year-cells > i { aspect-ratio: 1; border-radius: 2px; background: var(--paper-deep); }
+.year-cells > i.blank { background: none; }
+.year-cells > i.future { opacity: .4; }
+.year-cells > i.today { outline: 1.5px solid var(--brick); }
 .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
 .cal-wd { text-align: center; font-size: 11px; color: var(--ink-faint); padding-bottom: 2px; }
 .cal-day {

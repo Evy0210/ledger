@@ -197,3 +197,5 @@ export type SheetSyncResult = SheetOverview & {
   pushed?: number; appended?: number; pulled?: number; removed?: number;
 };
 export type SheetRoster = { enabled: boolean; me: string; people: string[]; roommates: string[] };
+
+export interface DayTotal { date: string; count: number; gbp: number; cny: number }

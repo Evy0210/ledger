@@ -284,7 +284,8 @@ def delete_expense(expense_id: int) -> dict | None:
     return exp
 
 
-def list_expenses(month: str | None = None, day: str | None = None, limit: int = 0) -> list[dict]:
+def list_expenses(month: str | None = None, day: str | None = None, limit: int = 0,
+                  start: str | None = None, end: str | None = None) -> list[dict]:
     sql = "SELECT * FROM expenses"
     args: list = []
     if month:
@@ -293,6 +294,9 @@ def list_expenses(month: str | None = None, day: str | None = None, limit: int =
     elif day:
         sql += " WHERE date = ?"
         args.append(day)
+    elif start and end:
+        sql += " WHERE date BETWEEN ? AND ?"
+        args.extend([start, end])
     sql += " ORDER BY date DESC, id DESC"
     if limit:
         sql += " LIMIT ?"
@@ -366,6 +370,15 @@ def list_months() -> list[dict]:
                FROM expenses GROUP BY month ORDER BY month DESC"""
         ).fetchall()
     return [{**dict(r), "total_gbp": round(r["total_gbp"] or 0, 2), "total_cny": round(r["total_cny"] or 0, 2)} for r in rows]
+
+
+def daily_totals(start: str, end: str) -> list[dict]:
+    """每天我自己那份的合计（日历年视图用，不用把整年明细都拉下来）。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""SELECT date, COUNT(*) AS count, SUM({SHARE_SQL}) AS gbp, SUM({SHARE_CNY_SQL}) AS cny
+               FROM expenses WHERE date BETWEEN ? AND ? GROUP BY date ORDER BY date""", (start, end)).fetchall()
+    return [{**dict(r), "gbp": round(r["gbp"] or 0, 2), "cny": round(r["cny"] or 0, 2)} for r in rows]
 
 
 def month_total(month: str) -> float:

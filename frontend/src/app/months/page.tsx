@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, cny, gbp, monthLabel } from "@/lib/api";
 import { RequireAuth } from "@/components/require-auth";
+import { HistoryCalendar } from "@/components/history-calendar";
 import type { MonthRow } from "@/lib/types";
 
 export default function MonthsPage() {
@@ -35,7 +36,9 @@ function MonthsInner() {
         <div className="hero-cny">≈ {cny(totalCny)} · {months.length} 个月 · 月均 {gbp(total / months.length)}</div>
       </section>
 
-      <section className="panel">
+      <HistoryCalendar />
+
+      <section className="panel months-panel">
         <h3 className="panel-title">最近 {recent.length} 个月</h3>
         <div className="trend">
           {recent.map((m) => (
