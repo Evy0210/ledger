@@ -1,6 +1,6 @@
 "use client";
 
-import type { DayTotal, Expense, ExpenseInput, InboundEmail, MonthRow, MonthSummary, PantryOverview, ParsedReceipt, ReconcileResult, Settings, SheetOverview, SheetRoster, SheetSyncResult, SmsTx, SplitInput, Status } from "./types";
+import type { DayTotal, Reminder, Expense, ExpenseInput, InboundEmail, MonthRow, MonthSummary, PantryOverview, ParsedReceipt, ReconcileResult, Settings, SheetOverview, SheetRoster, SheetSyncResult, SmsTx, SplitInput, Status } from "./types";
 
 // Same-origin: Next rewrites /api/* to the backend both in dev and in prod.
 const TOKEN_KEY = "ledger_token";
@@ -80,6 +80,8 @@ export const api = {
   listExpenses: (month: string) => request<{ expenses: Expense[] }>(`/api/expenses?month=${month}`),
   rangeExpenses: (start: string, end: string) => request<{ expenses: Expense[] }>(`/api/expenses?start=${start}&end=${end}`),
   days: (start: string, end: string) => request<{ days: DayTotal[] }>(`/api/days?start=${start}&end=${end}`),
+  reminders: (start: string, end: string) => request<{ reminders: Reminder[] }>(`/api/reminders?start=${start}&end=${end}`),
+  cancelReminder: (id: number) => request<{ ok: boolean }>(`/api/reminders/${id}`, { method: "DELETE" }),
   getExpense: (id: number | string) => request<Expense>(`/api/expenses/${id}`),
   createExpense: (input: ExpenseInput) =>
     request<Expense>("/api/expenses", { method: "POST", body: JSON.stringify(input) }),

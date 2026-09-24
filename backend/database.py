@@ -71,6 +71,14 @@ CREATE TABLE IF NOT EXISTS pantry (
     updated_at  INTEGER NOT NULL,
     UNIQUE (expense_id, item_idx)
 );
+CREATE TABLE IF NOT EXISTS reminders (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    due_at      TEXT NOT NULL,                     -- 伦敦本地时间 YYYY-MM-DD HH:MM
+    text        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',   -- pending | sent | cancelled
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (status, due_at);
 """
 
 # 默认设置；网页设置页可改，Telegram 绑定也存这里。
@@ -537,3 +545,48 @@ def set_pantry_expires(pantry_id: int, expires: str) -> bool:
     with _connect() as conn:
         cur = conn.execute("UPDATE pantry SET expires = ?, updated_at = ? WHERE id = ?", (expires, int(time.time()), pantry_id))
         return cur.rowcount > 0
+
+
+# ---- reminders ---------------------------------------------------------
+
+def add_reminder(due_at: str, text: str) -> int:
+    with _connect() as conn:
+        cur = conn.execute("INSERT INTO reminders (due_at, text, created_at) VALUES (?, ?, ?)",
+                           (due_at, text, int(time.time())))
+        return int(cur.lastrowid)
+
+
+def get_reminder(rid: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM reminders WHERE id = ?", (rid,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_reminders(status: str | None = None, start: str | None = None, end: str | None = None) -> list[dict]:
+    """start / end 是 YYYY-MM-DD，按 due_at 的日期部分筛。"""
+    sql, args = "SELECT * FROM reminders WHERE status != 'cancelled'", []
+    if status:
+        sql += " AND status = ?"
+        args.append(status)
+    if start and end:
+        sql += " AND substr(due_at, 1, 10) BETWEEN ? AND ?"
+        args.extend([start, end])
+    with _connect() as conn:
+        rows = conn.execute(sql + " ORDER BY due_at, id", args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def due_reminders(now: str) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM reminders WHERE status = 'pending' AND due_at <= ? ORDER BY due_at",
+                            (now,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_reminder(rid: int, **fields):
+    keys = [k for k in fields if k in ("due_at", "text", "status")]
+    if not keys:
+        return
+    with _connect() as conn:
+        conn.execute(f"UPDATE reminders SET {', '.join(f'{k} = ?' for k in keys)} WHERE id = ?",
+                     [fields[k] for k in keys] + [rid])

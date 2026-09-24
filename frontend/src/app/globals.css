@@ -191,6 +191,15 @@ input[type="date"].input { display: block; min-height: 44px; }
 .cal-total { font-size: 22px; font-weight: 600; }
 .cal-picked { display: flex; justify-content: center; margin-top: 10px; font-size: 12px; min-height: 30px; align-items: center; }
 .months-panel { margin-top: 14px; }
+.cal-remind { font-style: normal; font-size: 9px; margin-left: 1px; vertical-align: 2px; }
+.remind-dot { font-size: 10px; height: 14px; line-height: 14px; }
+.remind-list { margin-top: 16px; background: var(--amber-soft); border: 1px solid #ecd9a8; border-radius: 12px; padding: 4px 12px; }
+.remind-row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 8px 0; font-size: 14px; border-bottom: 1px solid #ecd9a8; }
+.remind-row:last-child { border-bottom: none; }
+.remind-row.done { opacity: .55; }
+.remind-when { font-family: var(--mono); font-size: 12px; color: #7a5a14; white-space: nowrap; }
+.remind-text { min-width: 0; overflow-wrap: anywhere; }
+.remind-sent { font-size: 11px; }
 
 .week-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
 .week-day { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; border-radius: 9px; border: 1px solid transparent; background: transparent; }

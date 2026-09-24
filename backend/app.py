@@ -329,6 +329,20 @@ def days(start: str, end: str):
     return {"days": database.daily_totals(start, end)}
 
 
+@app.get("/api/reminders", dependencies=[Depends(require_auth)])
+def list_reminders(start: str, end: str):
+    _check_range(start, end)
+    return {"reminders": database.list_reminders(start=start, end=end)}
+
+
+@app.delete("/api/reminders/{rid}", dependencies=[Depends(require_auth)])
+def cancel_reminder(rid: int):
+    if not database.get_reminder(rid):
+        raise HTTPException(404, "没有这条提醒")
+    database.update_reminder(rid, status="cancelled")
+    return {"ok": True}
+
+
 @app.get("/api/months", dependencies=[Depends(require_auth)])
 def months():
     return {"months": database.list_months()}

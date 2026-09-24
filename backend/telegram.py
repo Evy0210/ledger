@@ -12,6 +12,7 @@ import httpx
 
 import database
 import pantry
+import reminders
 import service
 import vision
 from config import ADMIN_TOKEN, SITE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -26,6 +27,8 @@ HELP = """我是你的记账小助手 📒
 • /today 今天记了什么
 • /month 本月汇总
 • 把银行 / 信用卡消费短信粘过来（一条或一堆）→ 自动对账，没记的补上
+• 说「提醒我明天吃饭的时候带小礼物」→ 到点提醒你；说「改到 18:00」改时间
+• /reminders 看待提醒的事，<code>/rm 2</code> 取消第 2 条
 • /undo 撤销上一笔（我记的或邮件来的）
 • /help 这条说明"""
 
@@ -102,6 +105,7 @@ def _set_commands():
                 {"command": "month", "description": "本月汇总"},
                 {"command": "split", "description": "待收的分账 / 代付"},
                 {"command": "fridge", "description": "食材库存 / 快过期"},
+                {"command": "reminders", "description": "待提醒的事"},
                 {"command": "ok", "description": "确认疑似同一笔（对账后）"},
                 {"command": "undo", "description": "撤销上一笔"},
                 {"command": "help", "description": "怎么用"},
@@ -135,6 +139,9 @@ async def _handle(client: httpx.AsyncClient, msg: dict):
     if text.lower().startswith("/used") or text.lower().startswith("/toss"):
         await asyncio.to_thread(_pantry_mark, chat_id, text)
         return
+    if text.lower().startswith("/rm"):
+        await asyncio.to_thread(_cancel_reminder, chat_id, text)
+        return
     if text.lower().startswith("/sms"):
         await asyncio.to_thread(_reconcile, chat_id, text[4:].strip())
         return
@@ -150,6 +157,14 @@ async def _handle(client: httpx.AsyncClient, msg: dict):
         send_message(chat_id, "收到，识别中… 🔍")
         data = await _download(client, file_id)
         await asyncio.to_thread(_ingest_image, chat_id, data, mime, text)
+        return
+
+    # 提醒要在记账之前判断：「提醒我明天交 50 镑房租」里也有金额
+    if text and reminders.is_request(text):
+        await asyncio.to_thread(_add_reminder, chat_id, text)
+        return
+    if text and reminders.RESCHEDULE.match(text) and reminders.last_created_pending():
+        await asyncio.to_thread(_reschedule, chat_id, text)
         return
 
     if text and _looks_like_sms(text):
@@ -205,6 +220,35 @@ def _quick_add(chat_id: str, text: str):
     }, source="telegram")
     record["id"] = database.insert_expense(record)
     send_message(chat_id, "记好了 ✅\n" + service.expense_text(record))
+
+
+def _add_reminder(chat_id: str, text: str):
+    r, guessed = reminders.create(text)
+    tail = "\n没说具体几点，先定在这个时间；想换就回我「改到 18:00」。" if guessed else "\n时间不对就回我「改到 18:00」。"
+    send_message(chat_id, f"⏰ 好的，{reminders.when_text(r['due_at'])} 提醒你：\n{service._esc(r['text'])}{tail}")
+
+
+def _reschedule(chat_id: str, text: str):
+    r = reminders.last_created_pending()
+    due = reminders.parse_time_only(reminders.RESCHEDULE.match(text).group(1), r["due_at"])
+    if not due:
+        send_message(chat_id, "没看懂新时间。像这样：<code>改到 18:00</code> 或 <code>改到明天下午3点</code>")
+        return
+    database.update_reminder(r["id"], due_at=due)
+    send_message(chat_id, f"改好了 ⏰ {reminders.when_text(due)} 提醒你：{service._esc(r['text'])}")
+
+
+def _pending_reminders() -> list[dict]:
+    return database.list_reminders(status="pending")
+
+
+def _cancel_reminder(chat_id: str, text: str):
+    rows = _pending_reminders()
+    picks = [int(x) for x in re.findall(r"\d+", text[3:])]
+    done = [rows[k - 1] for k in picks if 1 <= k <= len(rows)]
+    for r in done:
+        database.update_reminder(r["id"], status="cancelled")
+    send_message(chat_id, ("已取消：" + "、".join(service._esc(r["text"]) for r in done)) if done else "编号不对，/reminders 再看一眼")
 
 
 def _looks_like_sms(text: str) -> bool:
@@ -302,6 +346,15 @@ def _command(chat_id: str, cmd: str):
         lines = [f"📅 今天 {day}，{len(rows)} 笔，共 £{total:,.2f}", ""]
         for r in rows:
             lines.append(f"• {service._esc(r['merchant'] or '—')}  £{r['amount_gbp']:.2f}")
+        send_message(chat_id, "\n".join(lines))
+    elif cmd == "/reminders":
+        rows = _pending_reminders()
+        if not rows:
+            send_message(chat_id, "没有待提醒的事。跟我说「提醒我…」就能加。")
+            return
+        lines = ["⏰ 待提醒：", ""]
+        lines += [f"{k}. {reminders.when_text(r['due_at'])}  {service._esc(r['text'])}" for k, r in enumerate(rows, 1)]
+        lines.append("\n回复 <code>/rm 1</code> 取消")
         send_message(chat_id, "\n".join(lines))
     elif cmd == "/month":
         send_message(chat_id, service.month_report_text(service.today().strftime("%Y-%m")))

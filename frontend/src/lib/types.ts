@@ -199,3 +199,4 @@ export type SheetSyncResult = SheetOverview & {
 export type SheetRoster = { enabled: boolean; me: string; people: string[]; roommates: string[] };
 
 export interface DayTotal { date: string; count: number; gbp: number; cny: number }
+export interface Reminder { id: number; due_at: string; text: string; status: "pending" | "sent" }

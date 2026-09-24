@@ -78,6 +78,12 @@ def rebuild():
     days = [start + timedelta(days=i) for i in range((today - start).days + 1)]
     _fx_cache([d.isoformat() for d in days])
 
+    # 几条日程提醒，日历上能看到样子
+    for delta, hm, text in ((1, "11:00", "吃饭带小礼物"), (3, "09:00", "交 dissertation 提纲"), (-2, "18:30", "给家里打电话")):
+        rid = database.add_reminder(f"{(today + timedelta(days=delta)).isoformat()} {hm}", text)
+        if delta < 0:
+            database.update_reminder(rid, status="sent")
+
     for d in days:
         # 房租、订阅：每月固定
         if d.day == 1:

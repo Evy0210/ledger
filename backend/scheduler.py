@@ -1,12 +1,15 @@
 """提醒调度：每分钟看一眼伦敦时间。
 - 每天 reminder_hour 点：今天还没记账就催一下（mode 可选每天 / 工作日 / 每周日）
 - 每月 1 号 09:00：推上月汇总
+- 用户让 bot 设的日程提醒：到点就发
 去重靠 settings 里记「上次发送的日期」。"""
 import asyncio
 import logging
+from datetime import timedelta
 
 import database
 import pantry
+import reminders
 import service
 import telegram
 
@@ -28,6 +31,13 @@ def tick():
     now = service.now_local()
     today = now.date().isoformat()
     s = database.all_settings()
+
+    for r in database.due_reminders(now.strftime("%Y-%m-%d %H:%M")):
+        # 发成功才标已发；Telegram 暂时连不上就下一分钟再试
+        late = r["due_at"] < (now - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M")
+        if telegram.notify(f"⏰ 提醒：{service._esc(r['text'])}"
+                           + (f"\n（原定 {reminders.when_text(r['due_at'], now)}，服务器刚恢复，晚了）" if late else "")):
+            database.update_reminder(r["id"], status="sent")
 
     if s.get("reminder_enabled") == "1" and now.hour == int(s.get("reminder_hour") or 21):
         if database.get_setting("reminder_last_sent") != today and _due_today(s.get("reminder_mode"), now.weekday()):

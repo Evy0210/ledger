@@ -48,6 +48,8 @@ Exchange rates come from frankfurter.dev and need no key.
 - **Exchange rates**: daily GBP→CNY rate from frankfurter.dev (ECB), locked per expense; CNY / EUR / USD
   receipts are converted automatically.
 - **Reminders**: Telegram nudge at 21:00 (London time) if nothing was logged that day; monthly report on the 1st.
+- **Personal reminders**: tell the bot "remind me tomorrow at lunch to bring a gift" (in Chinese or English); it
+  parses the time, pings you before then, and the reminder shows on the History calendar. `/reminders` lists them.
 - **Reconciliation**: paste bank SMS or a statement screenshot; each transaction is matched as recorded /
   probably recorded (confirm with `/ok`) / missing (added automatically).
 - **Split bills**: swipe to split with flatmates, per-item "mine / shared / theirs", or mark as paid for

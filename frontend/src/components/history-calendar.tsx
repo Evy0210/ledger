@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { addDays, api, cny, gbp, todayStr, weekStart } from "@/lib/api";
 import { ExpenseList, weekday } from "@/components/expense-list";
-import type { DayTotal, Expense } from "@/lib/types";
+import type { DayTotal, Expense, Reminder } from "@/lib/types";
 
 type View = "day" | "week" | "month" | "year";
 const VIEWS: [View, string][] = [["day", "日"], ["week", "周"], ["month", "月"], ["year", "年"]];
@@ -59,6 +59,7 @@ export function HistoryCalendar() {
   const [picked, setPicked] = useState<string | null>(null);
   const [expenses, setExpenses] = useState<Expense[] | null>(null);
   const [days, setDays] = useState<DayTotal[] | null>(null);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
   const [error, setError] = useState("");
 
   // ?v=week&d=2026-09-24 优先（从明细页后退回来能回到原处），否则上次用的视图 + 今天
@@ -73,6 +74,7 @@ export function HistoryCalendar() {
   const load = useCallback(async (v: View, a: string) => {
     setError("");
     const [s, e] = rangeOf(v, a);
+    api.reminders(s, e).then((r) => setReminders(r.reminders)).catch(() => setReminders([]));
     try {
       if (v === "year") { setDays((await api.days(s, e)).days); setExpenses(null); }
       else { setExpenses((await api.rangeExpenses(s, e)).expenses); setDays(null); }
@@ -83,7 +85,7 @@ export function HistoryCalendar() {
 
   useEffect(() => {
     if (!view) return;
-    setExpenses(null); setDays(null); setPicked(null);
+    setExpenses(null); setDays(null); setPicked(null); setReminders([]);
     void load(view, anchor);
     window.history.replaceState(null, "", `/months?v=${view}&d=${anchor}`);
   }, [view, anchor, load]);
@@ -113,6 +115,16 @@ export function HistoryCalendar() {
   const elapsed = firstDay > last ? 0 : Math.round((Date.parse(last) - Date.parse(firstDay)) / 864e5) + 1;
   const loaded = expenses !== null || days !== null;
   const listed = expenses && picked ? expenses.filter((e) => e.date === picked) : expenses;
+  const remindDays = new Set(reminders.map((r) => r.due_at.slice(0, 10)));
+  const listedReminders = picked ? reminders.filter((r) => r.due_at.startsWith(picked)) : reminders;
+  // 往后翻是为了看提醒；年视图不往未来翻
+  const canNext = view === "year" ? nextStart <= today : true;
+
+  async function cancel(r: Reminder) {
+    if (!confirm(`取消提醒「${r.text}」？`)) return;
+    try { await api.cancelReminder(r.id); setReminders((rs) => rs.filter((x) => x.id !== r.id)); }
+    catch (err) { alert((err as Error).message); }
+  }
 
   return (
     <>
@@ -129,12 +141,12 @@ export function HistoryCalendar() {
             {start > today || end < today
               ? <button className="cal-today" onClick={() => go(view, today)}>回到今天</button> : null}
           </div>
-          <button onClick={() => go(view, shift(view, anchor, 1))} disabled={nextStart > today} aria-label="下一段">›</button>
+          <button onClick={() => go(view, shift(view, anchor, 1))} disabled={!canNext} aria-label="下一段">›</button>
         </div>
 
         {error && <div className="error-note">{error}</div>}
 
-        {loaded && (
+        {loaded && start <= today && (
           <div className="cal-sum">
             <span className="money cal-total">{gbp(total)}</span>
             <span className="muted">≈ {cny(totalCny)}</span>
@@ -143,9 +155,9 @@ export function HistoryCalendar() {
           </div>
         )}
 
-        {loaded && view === "week" && <WeekStrip start={start} perDay={perDay} today={today} picked={picked} onPick={setPicked} />}
+        {loaded && view === "week" && <WeekStrip start={start} perDay={perDay} remindDays={remindDays} today={today} picked={picked} onPick={setPicked} />}
         {loaded && view === "month" && (
-          <MonthGrid month={anchor.slice(0, 7)} perDay={perDay} perDayCount={perDayCount} today={today} picked={picked} onPick={setPicked} />
+          <MonthGrid month={anchor.slice(0, 7)} perDay={perDay} perDayCount={perDayCount} remindDays={remindDays} today={today} picked={picked} onPick={setPicked} />
         )}
         {(view === "week" || view === "month") && loaded && (
           <div className="cal-picked">
@@ -157,7 +169,20 @@ export function HistoryCalendar() {
         {loaded && view === "year" && <YearGrid year={anchor.slice(0, 4)} perDay={perDay} today={today} onMonth={(m) => go("month", `${m}-01`)} />}
       </section>
 
-      {view !== "year" && listed && (
+      {view !== "year" && listedReminders.length > 0 && (
+        <div className="remind-list">
+          {listedReminders.map((r) => (
+            <div key={r.id} className={`remind-row ${r.status === "sent" ? "done" : ""}`}>
+              <span className="remind-when">⏰ {picked || view === "day" ? r.due_at.slice(11) : `${Number(r.due_at.slice(5, 7))}/${Number(r.due_at.slice(8, 10))} ${r.due_at.slice(11)}`}</span>
+              <span className="remind-text">{r.text}</span>
+              {r.status === "pending"
+                ? <button className="row-more" aria-label="取消提醒" onClick={() => void cancel(r)}>×</button>
+                : <span className="faint remind-sent">已提醒</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {view !== "year" && listed && (listed.length > 0 || listedReminders.length === 0) && (
         <ExpenseList expenses={listed} today={today} onChanged={() => void load(view, anchor)}
           emptyText={picked || view === "day" ? "这天没有记录" : `这${view === "week" ? "周" : "个月"}没有记录`} />
       )}
@@ -165,8 +190,8 @@ export function HistoryCalendar() {
   );
 }
 
-function WeekStrip({ start, perDay, today, picked, onPick }: {
-  start: string; perDay: Record<string, number>; today: string; picked: string | null; onPick: (d: string | null) => void;
+function WeekStrip({ start, perDay, remindDays, today, picked, onPick }: {
+  start: string; perDay: Record<string, number>; remindDays: Set<string>; today: string; picked: string | null; onPick: (d: string | null) => void;
 }) {
   const dates = Array.from({ length: 7 }, (_, i) => addDays(start, i));
   const max = heatScale(dates.map((d) => perDay[d] || 0));
@@ -175,12 +200,13 @@ function WeekStrip({ start, perDay, today, picked, onPick }: {
       {dates.map((d, i) => {
         const v = perDay[d] || 0;
         return (
-          <button key={d} disabled={d > today} className={`week-day ${d === today ? "today" : ""} ${d === picked ? "picked" : ""}`}
+          <button key={d} disabled={d > today && !remindDays.has(d)} className={`week-day ${d === today ? "today" : ""} ${d === picked ? "picked" : ""}`}
             onClick={() => onPick(d === picked ? null : d)}>
             <span className="week-amt">{v ? shortGbp(v) : ""}</span>
             <span className="week-bar"><i className={v > max ? "over" : ""} style={{ height: `${v ? Math.max(6, Math.min(1, v / max) * 100) : 0}%` }} /></span>
             <span className="week-wd">{WEEKDAYS[i]}</span>
             <span className="week-num">{Number(d.slice(8))}</span>
+            <span className="remind-dot">{remindDays.has(d) ? "⏰" : ""}</span>
           </button>
         );
       })}
@@ -188,8 +214,8 @@ function WeekStrip({ start, perDay, today, picked, onPick }: {
   );
 }
 
-function MonthGrid({ month, perDay, perDayCount, today, picked, onPick }: {
-  month: string; perDay: Record<string, number>; perDayCount: Record<string, number>; today: string;
+function MonthGrid({ month, perDay, perDayCount, remindDays, today, picked, onPick }: {
+  month: string; perDay: Record<string, number>; perDayCount: Record<string, number>; remindDays: Set<string>; today: string;
   picked: string | null; onPick: (d: string | null) => void;
 }) {
   const [y, m] = month.split("-").map(Number);
@@ -204,10 +230,10 @@ function MonthGrid({ month, perDay, perDayCount, today, picked, onPick }: {
         if (!d) return <div key={`_${i}`} />;
         const v = perDay[d] || 0;
         return (
-          <button key={d} disabled={d > today} style={heatBg(v, scale)}
+          <button key={d} disabled={d > today && !remindDays.has(d)} style={heatBg(v, scale)}
             className={`cal-day ${d === today ? "today" : ""} ${d === picked ? "picked" : ""}`}
             onClick={() => onPick(d === picked ? null : d)}>
-            <span className="cal-num">{Number(d.slice(8))}</span>
+            <span className="cal-num">{Number(d.slice(8))}{remindDays.has(d) && <i className="cal-remind">⏰</i>}</span>
             {v > 0 && <span className="cal-amt">{shortGbp(v)}</span>}
             {perDayCount[d] > 1 && <span className="cal-count">{perDayCount[d]}笔</span>}
           </button>
