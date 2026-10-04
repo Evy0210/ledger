@@ -9,6 +9,7 @@ from datetime import timedelta
 
 import database
 import pantry
+import recall
 import reminders
 import service
 import telegram
@@ -55,6 +56,15 @@ def tick():
             text = pantry.expiring_text(now.date())
             if text:
                 telegram.notify(text)
+
+    # 20:00 问一次：银行扣了钱、还不知道是什么的（同一笔只主动问一次）
+    if now.hour == int(s.get("recall_hour") or 20) and database.get_setting("recall_last_sent") != today:
+        database.set_setting("recall_last_sent", today)
+        rows = recall.to_ask()
+        if rows:
+            recall.remember_list(rows[:20])
+            if telegram.notify(recall.list_text(rows[:20], f"🤔 有 {len(rows)} 笔银行扣款还不知道是什么：")):
+                recall.mark_asked([e["id"] for e in rows])
 
     if s.get("monthly_report") == "1" and now.day == 1 and now.hour >= 9:
         month = now.strftime("%Y-%m")

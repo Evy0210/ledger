@@ -51,7 +51,8 @@ Exchange rates come from frankfurter.dev and need no key.
 - **Personal reminders**: tell the bot "remind me tomorrow at lunch to bring a gift" (in Chinese or English); it
   parses the time, pings you before then, and the reminder shows on the History calendar. `/reminders` lists them.
 - **Reconciliation**: paste bank SMS or a statement screenshot; each transaction is matched as recorded /
-  probably recorded (confirm with `/ok`) / missing (added automatically).
+  probably recorded (confirm with `/ok`) / missing (added automatically). Bank charges with no receipt are
+  listed once a day at 20:00 (and on `/recall`); reply "the 11.21 one was the airport shuttle" and it is filled in.
 - **Split bills**: swipe to split with flatmates, per-item "mine / shared / theirs", or mark as paid for
   someone else; totals owed per person.
 - **Shared flat sheet** (optional): two-way sync with a Google Sheet shared with flatmates; only the shared
@@ -106,7 +107,8 @@ deploy/     K3s manifests, Dockerfiles, one-command deploy, Cloudflare email wor
 
 Send a receipt photo and the bot replies with the recognised items, translated names and the CNY equivalent;
 a line such as `Pret coffee 3.45` or `¥68 hotpot` works too. Every reply links back to the web page for edits,
-and `/undo` removes the last entry. Other commands: `/today`, `/month`, `/fridge`, `/used`, `/split`, `/help`.
+and `/undo` removes the last entry. Other commands: `/today`, `/month`, `/fridge`, `/used`, `/split`, `/recall`, `/help`.
+With the shared sheet enabled, "我转了 Alex 99.47" / "Sam 转给我 17.01" records a transfer between flatmates.
 
 1. Create a bot with @BotFather and put the token in `deploy/secret.yaml` (`TELEGRAM_BOT_TOKEN`).
 2. After deploying, send your site password to the bot as a message to bind it.

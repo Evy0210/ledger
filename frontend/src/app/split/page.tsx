@@ -157,11 +157,11 @@ function SplitInner() {
           </div>
           {!!sheet.transfers?.length && (
             <div className="s-sub" style={{ marginTop: 10 }}>
-              结清方案：{sheet.transfers.map((t) => `${t.from} → ${t.to} ${gbp(t.amount_gbp)}`).join("；")}
+              两两结清：{sheet.transfers.map((t) => `${t.from} → ${t.to} ${gbp(t.amount_gbp)}`).join("；")}
             </div>
           )}
           {(() => {
-            const theirs = sheet.rows.filter((r) => !r.from_web && !r.settled);
+            const theirs = sheet.rows.filter((r) => !r.from_web && !r.transfer && !r.settled);
             if (!theirs.length) return null;
             return (
               <>

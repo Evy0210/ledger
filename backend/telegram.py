@@ -12,8 +12,10 @@ import httpx
 
 import database
 import pantry
+import recall
 import reminders
 import service
+import sheets
 import vision
 from config import ADMIN_TOKEN, SITE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
@@ -27,6 +29,8 @@ HELP = """我是你的记账小助手 📒
 • /today 今天记了什么
 • /month 本月汇总
 • 把银行 / 信用卡消费短信粘过来（一条或一堆）→ 自动对账，没记的补上
+• 银行扣了钱但没小票的，想起来是什么就说「11.21 那笔是摆渡车的钱」；/recall 看还有哪些没说明
+• 和室友之间转了钱就说「我转了 {R1} 99.47」或「{R2} 转给我 17.01」→ 记进合租表
 • 说「提醒我明天吃饭的时候带小礼物」→ 到点提醒你；说「改到 18:00」改时间
 • /reminders 看待提醒的事，<code>/rm 2</code> 取消第 2 条
 • /undo 撤销上一笔（我记的或邮件来的）
@@ -36,6 +40,12 @@ _AMOUNT_RE = re.compile(r"(?P<cur>£|¥|￥|€|\$|gbp|cny|eur|usd)?\s*(?P<num>\
 _SMS_HINT = re.compile(r"spent|purchase|transaction|payment (?:of|to)|card (?:ending|\*)|debit|消费|支出|交易|人民币|信用卡|借记卡", re.I)
 _CUR = {"£": "GBP", "gbp": "GBP", "镑": "GBP", "¥": "CNY", "￥": "CNY", "cny": "CNY", "元": "CNY",
         "€": "EUR", "eur": "EUR", "$": "USD", "usd": "USD"}
+
+
+def _help() -> str:
+    """帮助里的转账示例用花名册里真实的室友名字（名字不进代码）。"""
+    mates = (sheets.roster()["roommates"] + ["Alex", "Sam"])[:2]
+    return HELP.replace("{R1}", mates[0]).replace("{R2}", mates[1])
 
 
 def enabled() -> bool:
@@ -104,6 +114,7 @@ def _set_commands():
                 {"command": "today", "description": "今天记了什么"},
                 {"command": "month", "description": "本月汇总"},
                 {"command": "split", "description": "待收的分账 / 代付"},
+                {"command": "recall", "description": "银行扣了钱、还不知道是什么的"},
                 {"command": "fridge", "description": "食材库存 / 快过期"},
                 {"command": "reminders", "description": "待提醒的事"},
                 {"command": "ok", "description": "确认疑似同一笔（对账后）"},
@@ -123,7 +134,7 @@ async def _handle(client: httpx.AsyncClient, msg: dict):
     # 绑定：把网站密码发过来
     if ADMIN_TOKEN and text == ADMIN_TOKEN:
         database.set_setting("telegram_chat_id", chat_id)
-        send_message(chat_id, "绑定好了 ✅ 以后提醒会发到这里。\n\n" + HELP)
+        send_message(chat_id, "绑定好了 ✅ 以后提醒会发到这里。\n\n" + _help())
         return
     if chat_id != bound_chat_id():
         send_message(chat_id, "这是私人账本。把网站密码发给我完成绑定。")
@@ -167,6 +178,13 @@ async def _handle(client: httpx.AsyncClient, msg: dict):
         await asyncio.to_thread(_reschedule, chat_id, text)
         return
 
+    # 转账、补充说明都带金额 / 日期数字，要赶在「一句话记账」前面认出来，否则会被记成一笔新消费
+    if text and recall.is_note(text):
+        await asyncio.to_thread(_recall_note, chat_id, text)
+        return
+    if text and sheets.enabled() and _transfer_parts(text):
+        await asyncio.to_thread(_record_transfer, chat_id, text)
+        return
     if text and _looks_like_sms(text):
         await asyncio.to_thread(_reconcile, chat_id, text)
         return
@@ -222,6 +240,81 @@ def _quick_add(chat_id: str, text: str):
     send_message(chat_id, "记好了 ✅\n" + service.expense_text(record))
 
 
+# ---- 和室友之间的转账 → 合租表 ------------------------------------------------
+
+_TRANSFER_RE = re.compile(r"转账|转了|转给|转我|给我转|还给|还我|还了|收到|转|transfer|paid (?:me|back)|sent", re.I)
+_TO_ME = re.compile(r"(?:给|转|还)\s*我|收到|paid me|sent me|to me", re.I)
+_ME_FIRST = re.compile(r"我\s*(?:已经|刚)?\s*(?:转|还|给)|\bi (?:sent|paid|transferred)", re.I)
+
+
+def _transfer_parts(text: str) -> tuple[str, str, float, str] | None:
+    """「我转了 Alex 99.47」→ (转钱的, 收钱的, 金额, 日期)。认不出来返回 None。"""
+    kw = _TRANSFER_RE.search(text)
+    if not kw:
+        return None
+    me = sheets.SHEETS_ME
+    names = sorted(((m.start(), p) for p in sheets.SHEETS_PEOPLE if p != me
+                    for m in re.finditer(re.escape(p), text, re.I)), key=lambda x: x[0])
+    others = list(dict.fromkeys(p for _, p in names))
+    nums = [m for m in _AMOUNT_RE.finditer(text) if m.group("num")]
+    if not others or not nums:
+        return None
+    money = next((m for m in nums if m.group("cur") or m.group("cur2")), nums[-1])
+    amount = float(money.group("num").replace(",", "."))
+    if len(others) >= 2:
+        sender, receiver = others[0], others[1]
+    elif _TO_ME.search(text):
+        sender, receiver = others[0], me
+    elif _ME_FIRST.search(text):
+        sender, receiver = me, others[0]
+    elif names[0][0] < kw.start():                  # 「Sam 转账 17」：名字在动词前面 → 对方转给我
+        sender, receiver = others[0], me
+    else:                                           # 「转 Alex 99.47」
+        sender, receiver = me, others[0]
+    back = 2 if "前天" in text else 1 if "昨天" in text else 0
+    return sender, receiver, amount, (service.today() - service.timedelta(days=back)).isoformat()
+
+
+def _record_transfer(chat_id: str, text: str):
+    sender, receiver, amount, day = _transfer_parts(text)
+    try:
+        t = sheets.add_transfer(sender, receiver, amount, day)
+    except Exception as e:  # noqa: BLE001
+        send_message(chat_id, f"没记进合租表：{service._esc(str(e))}")
+        return
+    database.set_setting("last_transfer", json.dumps({"ref": t["ref"], "at": int(service.now_local().timestamp())}))
+    me = sheets.SHEETS_ME
+    other = receiver if sender == me else sender
+    try:
+        left = sheets.pair_balance(me, other)      # 我还欠 other 多少
+        status = ("两清 ✓" if abs(left) < 0.05 else f"你还要转给 {other} £{left:.2f}" if left > 0
+                  else f"{other} 还要转给你 £{-left:.2f}")
+        status = f"\n现在你和 {other}：{status}"
+    except Exception:  # noqa: BLE001
+        status = ""
+    send_message(chat_id, f"💸 记进合租表了：{day[5:]} {sender} → {receiver} £{amount:.2f}{status}\n"
+                          f"方向或金额不对就回 /undo 撤销。")
+
+
+# ---- 银行扣了钱、没小票的：补充说明 ----------------------------------------------
+
+def _recall_note(chat_id: str, text: str):
+    found, desc = recall.pick(text)
+    if not found:
+        send_message(chat_id, "没找到是哪一笔。说日期或金额都行，比如「11.21 那笔是摆渡车」「£3.50 那笔是…」；/recall 看还没说明的。")
+        return
+    if len(found) > 1:
+        recall.remember_list(found[:9])
+        lines = [f"对上了 {len(found)} 笔，是哪一笔？", ""] + [recall.line(k, e) for k, e in enumerate(found[:9], 1)]
+        lines.append(f"\n回我「第 1 笔是{service._esc(desc)}」")
+        send_message(chat_id, "\n".join(lines))
+        return
+    e = recall.apply(found[0], desc, vision.classify_text)
+    # 不能提示 /undo：那会把整笔银行扣款删掉
+    text = service.expense_text(e).replace(" · /undo 撤销", "")
+    send_message(chat_id, f"补上了 ✅\n{text}\n说错了就再说一遍「{e['date'][5:].replace('-', '.')} 那笔是…」，会覆盖。")
+
+
 def _add_reminder(chat_id: str, text: str):
     r, guessed = reminders.create(text)
     tail = "\n没说具体几点，先定在这个时间；想换就回我「改到 18:00」。" if guessed else "\n时间不对就回我「改到 18:00」。"
@@ -272,6 +365,7 @@ def _reconcile_txs(chat_id: str, txs: list[dict], intro: str = "对账结果："
     results = service.reconcile(txs)
     lines = []
     added = 0
+    new_ids: list[tuple[int, str]] = []
     pending: list[dict] = []
     for r in results:
         tx, e = r["tx"], r["expense"]
@@ -289,8 +383,11 @@ def _reconcile_txs(chat_id: str, txs: list[dict], intro: str = "对账结果："
         else:
             rec = service.record_sms(tx, vision.classify_text)
             added += 1
+            new_ids.append((rec["id"], rec["date"][5:].replace("-", ".")))
             lines.append(f"🆕 {head} → 没记过，已按短信记为「{service._esc(rec['merchant'])}」")
-    tail = f"\n\n补记了 {added} 笔，有小票的话发我补明细（会自动并进去）。" if added else ""
+    tail = (f"\n\n补记了 {added} 笔。有小票就发我（会自动并进去）；没小票的话，想起来是什么就回我"
+            f"「{new_ids[0][1]} 那笔是…」。" if added else "")
+    recall.mark_asked([i for i, _ in new_ids])
     if pending:
         database.set_setting("pending_adjust", json.dumps(pending, ensure_ascii=False))
         tail += ("\n\n带 ❓ 的是疑似同一笔：回复 <b>/ok</b> 把它们的金额改成短信金额（差额记成一行配送费/差价）；"
@@ -335,7 +432,7 @@ def _pantry_mark(chat_id: str, text: str):
 
 def _command(chat_id: str, cmd: str):
     if cmd in ("/start", "/help"):
-        send_message(chat_id, HELP)
+        send_message(chat_id, _help())
     elif cmd == "/today":
         day = service.today().isoformat()
         rows = database.list_expenses(day=day)
@@ -390,8 +487,22 @@ def _command(chat_id: str, cmd: str):
             lines.append(f"• {r['date'][5:]} {service._esc(r['merchant'] or '—')} £{r['amount_gbp']:.2f} {kind}{who} → 待收 £{r['owed_gbp']:.2f}")
         lines.append(f'\n<a href="{SITE_URL}/split">去网页收款 / 导出表格</a>')
         send_message(chat_id, "\n".join(lines))
+    elif cmd == "/recall":
+        rows = recall.unexplained()
+        if not rows:
+            send_message(chat_id, "银行扣款都有说明了 🎉")
+            return
+        recall.remember_list(rows[:20])
+        recall.mark_asked([e["id"] for e in rows])
+        send_message(chat_id, recall.list_text(rows[:20], f"🤔 这 {len(rows)} 笔银行扣了钱，还不知道是什么："))
     elif cmd == "/undo":
         last = database.last_expense(sources=("telegram", "email"))
+        tr = json.loads(database.get_setting("last_transfer") or "{}")
+        if tr and (not last or tr["at"] >= last["created_at"]):
+            database.set_setting("last_transfer", "")
+            ok = sheets.delete_transfer(tr["ref"])
+            send_message(chat_id, "已从合租表撤销刚才那笔转账。" if ok else "合租表里没找到刚才那笔转账（可能已经被删了）。")
+            return
         if not last:
             send_message(chat_id, "没有可撤销的记录。")
             return
@@ -399,4 +510,4 @@ def _command(chat_id: str, cmd: str):
         service.delete_image(last["image"])
         send_message(chat_id, f"已撤销：{service._esc(last['merchant'] or '—')} £{last['amount_gbp']:.2f}")
     else:
-        send_message(chat_id, "不认识这个命令。\n" + HELP)
+        send_message(chat_id, "不认识这个命令。\n" + _help())

@@ -7,6 +7,8 @@
   （室友手写的行没 ID，永远不碰）。金额只推**公用部分**——
   商品级标成「我的 / TA 的」的东西不进合租账，室友不用理解任何特殊规则。
 - pull：室友在表上勾的「已结清」写回本地库。
+- 转账：Telegram 说「我转了 Alex 99.47」→ 追加一行（付款人 = 转钱的人，只勾收钱的人，
+  ID 以 t 开头）。同步只认 e 开头的 ID，转账行不会被当成「本站删掉的账单」清掉。
 
 「已结清」两边都能改，用三方合并定谁赢：和上次同步时的值比，谁变了听谁的；
 都变了听表的（室友刚勾完的可能性更大）。上次的值存在 settings.sheets_last_settled。
@@ -38,6 +40,8 @@ LAST_KEY = "sheets_last_settled"
 
 _token = {"value": "", "exp": 0.0}
 _lock = threading.Lock()
+_write_lock = threading.Lock()       # 同步和记转账都要「找最后一行再往下写」，不能同时跑
+_OURS = re.compile(r"e\d+t?")          # 同步推上去的账单行
 
 
 def enabled() -> bool:
@@ -210,7 +214,11 @@ def sync() -> dict:
     """跑一轮双向同步，返回这次改了些什么。没开启就直接返回。"""
     if not enabled():
         return {"enabled": False}
+    with _write_lock:
+        return _sync()
 
+
+def _sync() -> dict:
     rows = _read_rows()
     in_sheet: dict[str, tuple[int, list]] = {}
     used_rows: set[int] = set()
@@ -219,7 +227,7 @@ def sync() -> dict:
         if str(_cell(r, COL_DATE)).strip():
             used_rows.add(row_no)
         rid = str(_cell(r, COL_ID)).strip()
-        if rid:
+        if _OURS.fullmatch(rid):
             in_sheet[rid] = (row_no, r)
 
     # 一笔账可能占两行（公用的 + 「TA 的」），所以 ID 带后缀；rid -> (账单, 金额, 参与人, 附注)
@@ -262,7 +270,7 @@ def sync() -> dict:
             updates.append((row_no, new))
 
     # 3) 本站删掉 / 取消分账的，把表里对应的行删掉（只动有 ID 的行）
-    # 有 ID 的行都是本站推上去的；室友手写的行没有 ID，永远不碰
+    # 只动 e 开头的行：室友手写的行没有 ID，转账行是 t 开头，都不碰
     stale = [(row_no, r) for rid, (row_no, r) in in_sheet.items() if rid not in mine]
     if updates:
         _req("POST", "/values:batchUpdate", json={
@@ -301,13 +309,14 @@ def _changed(old: list, new: list) -> bool:
 
 # ---- 给前端看的：整张表 + 每人净额 ----------------------------------------
 
-def overview() -> dict:
-    """读「明细」算出和汇总 tab 一样的数字，这样网页上不用开表就能看。"""
-    if not enabled():
-        return {"enabled": False, "people": [], "rows": []}
-    rows, out = _read_rows(), []
-    paid = {p: 0.0 for p in SHEETS_PEOPLE}
-    owes = {p: 0.0 for p in SHEETS_PEOPLE}
+def _is_transfer(payer: str, part: list[str]) -> bool:
+    """只勾了一个人、又不是付款人自己 → 这是一笔转账（付款人转给被勾的人）。"""
+    return len(part) == 1 and part[0] != payer
+
+
+def _parse(rows: list[list]) -> tuple[list[dict], dict[tuple[str, str], float]]:
+    """明细 → (每行, 两两之间欠的钱 {(欠钱的, 被欠的): 金额})。只算没结清的行。"""
+    out, pair = [], {}
     for i, r in enumerate(rows):
         if not str(_cell(r, COL_DATE)).strip():
             continue
@@ -316,42 +325,101 @@ def overview() -> dict:
         settled = _truthy(_cell(r, COL_SETTLED))
         payer = str(_cell(r, COL_PAYER)).strip()
         each = round(amount / len(part), 2) if part else 0.0
-        if not settled:
-            if payer in paid:
-                paid[payer] += amount
+        if not settled and payer in SHEETS_PEOPLE:
             for p in part:
-                owes[p] += each
+                if p != payer:
+                    pair[(p, payer)] = pair.get((p, payer), 0.0) + each
         out.append({"row": i + FIRST_ROW, "date": str(_cell(r, COL_DATE)),
                     "merchant": str(_cell(r, COL_MERCHANT)), "amount_gbp": round(amount, 2),
                     "payer": payer, "participants": part, "each_gbp": each,
                     "note": str(_cell(r, COL_NOTE)),
                     "settled": settled, "ref": str(_cell(r, COL_ID)),
-                    "from_web": bool(str(_cell(r, COL_ID)).strip())})
+                    "from_web": bool(_OURS.fullmatch(str(_cell(r, COL_ID)).strip())),
+                    "transfer": _is_transfer(payer, part)})
+    return out, pair
+
+
+def overview() -> dict:
+    """读「明细」算出和汇总 tab 一样的数字，这样网页上不用开表就能看。"""
+    if not enabled():
+        return {"enabled": False, "people": [], "rows": []}
+    out, pair = _parse(_read_rows())
+    paid = {p: 0.0 for p in SHEETS_PEOPLE}
+    owes = {p: 0.0 for p in SHEETS_PEOPLE}
+    for r in out:
+        if r["settled"]:
+            continue
+        if r["payer"] in paid:
+            paid[r["payer"]] += r["amount_gbp"]
+        for p in r["participants"]:
+            owes[p] += r["each_gbp"]
     people = [{"name": p, "paid_gbp": round(paid[p], 2), "owes_gbp": round(owes[p], 2),
                "net_gbp": round(paid[p] - owes[p], 2)} for p in SHEETS_PEOPLE]
+    bills = [r for r in out if not r["settled"] and not r["transfer"]]
     return {"enabled": True, "me": SHEETS_ME, "people": people,
             "url": f"https://docs.google.com/spreadsheets/d/{SHEETS_ID}/edit",
-            "transfers": _settle(people), "rows": out,
-            "open_count": sum(1 for r in out if not r["settled"]),
-            "open_gbp": round(sum(r["amount_gbp"] for r in out if not r["settled"]), 2)}
+            "transfers": _settle(pair), "rows": out,
+            "open_count": len(bills), "open_gbp": round(sum(r["amount_gbp"] for r in bills), 2)}
 
 
-def _settle(people: list[dict]) -> list[dict]:
-    """最少转账次数的结清方案（贪心：最大债主还给最大债权人）。"""
-    debt = sorted([p.copy() for p in people if p["net_gbp"] < -0.005], key=lambda x: x["net_gbp"])
-    cred = sorted([p.copy() for p in people if p["net_gbp"] > 0.005], key=lambda x: -x["net_gbp"])
+def pair_balance(a: str, b: str) -> float:
+    """a 还欠 b 多少（负数 = b 欠 a）。"""
+    _, pair = _parse(_read_rows())
+    return round(pair.get((a, b), 0.0) - pair.get((b, a), 0.0), 2)
+
+
+def person(name: str) -> str:
+    """把随手打的名字（大小写不一）对回花名册；对不上返回空串。"""
+    return next((p for p in SHEETS_PEOPLE if p.lower() == name.strip().lower()), "")
+
+
+def add_transfer(sender: str, receiver: str, amount: float, day: str, note: str = "") -> dict:
+    """记一笔两人之间的转账：追加一行，付款人 = 转钱的人，只勾收钱的人。"""
+    if not enabled():
+        raise RuntimeError("合租表没开")
+    if sender not in SHEETS_PEOPLE or receiver not in SHEETS_PEOPLE or sender == receiver:
+        raise ValueError("转账双方得是花名册里的两个人")
+    rid = f"t{int(time.time())}"
+    with _write_lock:
+        rows = _read_rows()
+        used = [i + FIRST_ROW for i, r in enumerate(rows) if str(_cell(r, COL_DATE)).strip()]
+        row_no = max(used) + 1 if used else FIRST_ROW
+        if row_no > LAST_ROW:
+            raise RuntimeError(f"明细表满了（{LAST_ROW} 行）")
+        ticks = [p == receiver for p in SHEETS_PEOPLE[:3]]
+        _req("POST", "/values:batchUpdate", json={"valueInputOption": "USER_ENTERED", "data": [
+            # H/I 是公式，跳过不写
+            {"range": f"'{SHEETS_TAB}'!A{row_no}:G{row_no}",
+             "values": [[day, f"{sender} 转账给 {receiver}", round(amount, 2), sender, *ticks]]},
+            {"range": f"'{SHEETS_TAB}'!J{row_no}:L{row_no}", "values": [[note, False, rid]]}]})
+    return {"ref": rid, "row": row_no, "sender": sender, "receiver": receiver, "amount_gbp": round(amount, 2), "date": day}
+
+
+def delete_transfer(ref: str) -> bool:
+    """撤销 add_transfer 记的那一行（按 ID 找，只删 t 开头的）。"""
+    if not enabled() or not ref.startswith("t"):
+        return False
+    with _write_lock:
+        for i, r in enumerate(_read_rows()):
+            if str(_cell(r, COL_ID)).strip() == ref:
+                _req("POST", ":batchUpdate", json={"requests": [{"deleteDimension": {"range": {
+                    "sheetId": _tab_id(), "dimension": "ROWS", "startIndex": i + FIRST_ROW - 1, "endIndex": i + FIRST_ROW}}}]})
+                return True
+    return False
+
+
+def _settle(pair: dict[tuple[str, str], float]) -> list[dict]:
+    """两两结清：每对人之间轧差，谁欠谁就直接转给谁。
+
+    不做三人合并的「最少转账」：那样 A 欠 B 的钱会绕道 C，大家实际是两两私下转的，
+    一旦有人先私下结了一对，照合并方案再转就会重复付。差额不到 5 便士算结清（逐行四舍五入的零头）。"""
     out = []
-    i = j = 0
-    while i < len(debt) and j < len(cred):
-        amt = round(min(-debt[i]["net_gbp"], cred[j]["net_gbp"]), 2)
-        if amt > 0.005:
-            out.append({"from": debt[i]["name"], "to": cred[j]["name"], "amount_gbp": amt})
-        debt[i]["net_gbp"] += amt
-        cred[j]["net_gbp"] -= amt
-        if debt[i]["net_gbp"] > -0.005:
-            i += 1
-        if cred[j]["net_gbp"] < 0.005:
-            j += 1
+    people = list(SHEETS_PEOPLE)
+    for i, a in enumerate(people):
+        for b in people[i + 1:]:
+            net = round(pair.get((a, b), 0.0) - pair.get((b, a), 0.0), 2)
+            if abs(net) >= 0.05:
+                out.append({"from": a if net > 0 else b, "to": b if net > 0 else a, "amount_gbp": abs(net)})
     return out
 
 

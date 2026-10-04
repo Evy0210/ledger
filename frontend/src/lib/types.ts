@@ -188,6 +188,7 @@ export type SheetRow = {
   row: number; date: string; merchant: string; amount_gbp: number; payer: string;
   participants: string[]; each_gbp: number; note: string; settled: boolean;
   ref: string; from_web: boolean;          // from_web=false 就是室友自己在表上记的
+  transfer: boolean;                       // 两人之间的转账（只勾了收钱的人），不是账单
 };
 export type SheetOverview = {
   enabled: boolean; me?: string; url?: string; people: SheetPerson[]; transfers?: SheetTransfer[];
